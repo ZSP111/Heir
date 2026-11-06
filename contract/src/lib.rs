@@ -9,9 +9,19 @@
 //!
 //! Any owner action (check in, deposit, withdraw, edit heirs, edit periods) counts as a
 //! check-in and resets the countdown.
+//!
+//! Each owner also has an Ethereum address controlled by this contract through NEAR
+//! Chain Signatures (derivation path `eth-<owner>`). Only this contract can ask the MPC
+//! network to sign for it, so ETH sent there follows the same rules as the NEAR vault.
 
+mod eth;
+
+use near_sdk::json_types::U128;
 use near_sdk::store::LookupMap;
-use near_sdk::{env, near, require, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise};
+use near_sdk::{
+    env, ext_contract, near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault,
+    Promise, PromiseError,
+};
 
 /// Shares are in basis points: 10_000 = 100%, 2_500 = 25%.
 pub const BPS_TOTAL: u16 = 10_000;
@@ -22,11 +32,33 @@ pub const MIN_PERIOD_MS: u64 = 60 * 1000;
 /// It is refunded on cancel, or shared among the heirs once the vault unlocks.
 pub const STORAGE_DEPOSIT: NearToken = NearToken::from_millinear(50); // 0.05 NEAR
 
+/// The NEAR Chain Signatures (MPC) signer contract on testnet.
+pub const MPC_CONTRACT: &str = "v1.signer-prod.testnet";
+/// Gas for the MPC `sign` call (it needs >= 15 Tgas) and for our callback.
+const MPC_SIGN_GAS: Gas = Gas::from_tgas(50);
+const ON_SIGNED_GAS: Gas = Gas::from_tgas(15);
+/// Limits on the gas price a caller can pick, so nobody can burn the vault's ETH on fees.
+pub const MAX_FEE_PER_GAS: u128 = 200_000_000_000; // 200 gwei
+pub const MAX_PRIORITY_FEE_PER_GAS: u128 = 10_000_000_000; // 10 gwei
+
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Heir {
     pub account_id: AccountId,
     pub share_bps: u16,
+}
+
+/// An heir paid in ETH on Ethereum: a fixed amount to a fixed address.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EthHeir {
+    /// Lowercase "0x..." address.
+    pub address: String,
+    pub amount_wei: U128,
+    /// The Ethereum nonce assigned to this heir's payout once it has been signed.
+    pub nonce: Option<u64>,
+    /// The signed raw transaction ("0x..."), ready to broadcast to Ethereum.
+    pub signed_tx: Option<String>,
 }
 
 #[near(serializers = [json])]
@@ -50,6 +82,7 @@ pub struct Vault {
     pub payout_total: Option<NearToken>,
     pub paid_out: NearToken,
     pub claimed: Vec<AccountId>,
+    pub eth_heirs: Vec<EthHeir>,
 }
 
 impl Vault {
@@ -84,11 +117,27 @@ impl Vault {
     }
 }
 
+/// Per-owner state for their Ethereum address. Kept even after a vault is deleted, so
+/// the nonce stays correct if the owner makes a new vault (same address).
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EthAccount {
+    /// The next Ethereum nonce to use. Only this contract can sign for the address, so it
+    /// knows exactly how many transactions have been signed.
+    pub next_nonce: u64,
+    /// True while a signature request is in flight. Requests run one at a time so two
+    /// payouts can never be signed with the same nonce.
+    pub pending: bool,
+    /// The most recent signed transaction, for broadcasting or re-broadcasting.
+    pub last_signed_tx: Option<String>,
+}
+
 /// What view calls return: the vault plus computed status and deadlines.
 #[near(serializers = [json])]
 pub struct VaultView {
     pub owner: AccountId,
     pub heirs: Vec<Heir>,
+    pub eth_heirs: Vec<EthHeir>,
     pub balance: NearToken,
     pub storage_deposit: NearToken,
     pub check_in_period_ms: u64,
@@ -102,11 +151,69 @@ pub struct VaultView {
     pub paid_out: NearToken,
 }
 
+/// What the owner passes in to set an ETH heir.
+#[near(serializers = [json])]
+pub struct EthHeirInput {
+    pub address: String,
+    pub amount_wei: U128,
+}
+
+/// The ETH transfer we asked the MPC network to sign, passed to the callback.
+#[near(serializers = [json])]
+pub struct PendingEthTx {
+    pub nonce: u64,
+    pub max_fee_per_gas: U128,
+    pub max_priority_fee_per_gas: U128,
+    pub to: String,
+    pub value: U128,
+    /// Set when this is an heir payout (None for an owner withdrawal).
+    pub heir_address: Option<String>,
+}
+
+// ---------------------------------------------------------------- MPC signer interface
+
+#[near(serializers = [json])]
+pub enum MpcPayload {
+    Ecdsa(String),
+}
+
+#[near(serializers = [json])]
+pub struct MpcSignRequest {
+    pub path: String,
+    pub payload_v2: MpcPayload,
+    pub domain_id: u64,
+}
+
+#[near(serializers = [json])]
+pub struct MpcAffinePoint {
+    pub affine_point: String,
+}
+
+#[near(serializers = [json])]
+pub struct MpcScalar {
+    pub scalar: String,
+}
+
+/// The signature the MPC network returns for an ECDSA (secp256k1) request.
+#[near(serializers = [json])]
+pub struct MpcSignature {
+    pub big_r: MpcAffinePoint,
+    pub s: MpcScalar,
+    pub recovery_id: u8,
+}
+
+#[allow(dead_code)]
+#[ext_contract(ext_mpc)]
+trait MpcSigner {
+    fn sign(&mut self, request: MpcSignRequest);
+}
+
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
     Vaults,
     VaultsByHeir,
+    EthAccounts,
 }
 
 #[near(contract_state)]
@@ -115,6 +222,7 @@ pub struct Contract {
     vaults: LookupMap<AccountId, Vault>,
     /// heir account -> owners of the vaults that name them, for the heir claim page.
     vaults_by_heir: LookupMap<AccountId, Vec<AccountId>>,
+    eth_accounts: LookupMap<AccountId, EthAccount>,
 }
 
 #[near]
@@ -124,7 +232,16 @@ impl Contract {
         Self {
             vaults: LookupMap::new(StorageKey::Vaults),
             vaults_by_heir: LookupMap::new(StorageKey::VaultsByHeir),
+            eth_accounts: LookupMap::new(StorageKey::EthAccounts),
         }
+    }
+
+    /// One-off upgrade from the first (NEAR-only) version, which had no vaults left.
+    /// Only the contract account itself can call it.
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        Self::new()
     }
 
     // ---------------------------------------------------------------- owner actions
@@ -153,6 +270,7 @@ impl Contract {
                 payout_total: None,
                 paid_out: NearToken::from_yoctonear(0),
                 claimed: vec![],
+                eth_heirs: vec![],
             },
         );
         env::log_str(&format!("vault_created owner={owner}"));
@@ -183,7 +301,7 @@ impl Contract {
         Promise::new(env::predecessor_account_id()).transfer(amount)
     }
 
-    /// Replace the list of heirs. Shares must add up to 100% (10_000 bps).
+    /// Replace the list of NEAR heirs. Shares must add up to 100% (10_000 bps).
     pub fn set_heirs(&mut self, heirs: Vec<Heir>) {
         let owner = env::predecessor_account_id();
         validate_heirs(&owner, &heirs);
@@ -191,6 +309,23 @@ impl Contract {
         self.unindex_heirs(&owner, &old_heirs);
         self.index_heirs(&owner, &heirs);
         self.owner_vault_mut().heirs = heirs;
+    }
+
+    /// Replace the list of ETH heirs: each gets a fixed amount of ETH (in wei) sent to
+    /// their Ethereum address once the vault unlocks. Pass [] to remove them all.
+    pub fn set_eth_heirs(&mut self, eth_heirs: Vec<EthHeirInput>) {
+        require!(eth_heirs.len() <= MAX_HEIRS, "At most 10 ETH heirs");
+        let mut parsed: Vec<EthHeir> = Vec::new();
+        for input in eth_heirs {
+            let address = normalize_address(&input.address);
+            require!(input.amount_wei.0 > 0, "Every ETH heir needs an amount above 0");
+            require!(
+                !parsed.iter().any(|h| h.address == address),
+                "Each ETH address can only be listed once"
+            );
+            parsed.push(EthHeir { address, amount_wei: input.amount_wei, nonce: None, signed_tx: None });
+        }
+        self.owner_vault_mut().eth_heirs = parsed;
     }
 
     /// Change how long the owner can stay silent, and how long the grace period lasts.
@@ -201,7 +336,8 @@ impl Contract {
         vault.grace_period_ms = grace_period_ms;
     }
 
-    /// Close the vault and send everything (balance + storage deposit) back to the owner.
+    /// Close the vault and send all its NEAR (balance + storage deposit) back to the
+    /// owner. ETH stays at the owner's Ethereum address; use `withdraw_eth` for it.
     pub fn cancel(&mut self) -> Promise {
         let owner = env::predecessor_account_id();
         self.owner_vault_mut(); // checks the vault exists and is not unlocked
@@ -209,6 +345,29 @@ impl Contract {
         self.unindex_heirs(&owner, &vault.heirs);
         env::log_str(&format!("vault_cancelled owner={owner}"));
         Promise::new(owner).transfer(vault.balance.saturating_add(vault.storage_deposit))
+    }
+
+    /// Owner: sign a transfer of ETH from the owner's vault address to `to`. Works while
+    /// the vault is not unlocked, or when the owner has no vault. Returns the signed
+    /// transaction, which the website then broadcasts to Ethereum.
+    pub fn withdraw_eth(
+        &mut self,
+        to: String,
+        amount_wei: U128,
+        max_fee_per_gas: U128,
+        max_priority_fee_per_gas: U128,
+    ) -> Promise {
+        let owner = env::predecessor_account_id();
+        if self.vaults.contains_key(&owner) {
+            self.owner_vault_mut(); // must not be unlocked; also counts as a check-in
+        }
+        require!(amount_wei.0 > 0, "Amount must be more than 0");
+        let to = normalize_address(&to);
+        let nonce = self.eth_accounts.get(&owner).map(|a| a.next_nonce).unwrap_or(0);
+        self.request_eth_signature(
+            owner,
+            PendingEthTx { nonce, max_fee_per_gas, max_priority_fee_per_gas, to, value: amount_wei, heir_address: None },
+        )
     }
 
     // ---------------------------------------------------------------- heir actions
@@ -240,14 +399,97 @@ impl Contract {
             vault.share_of(&heir)
         };
         vault.paid_out = vault.paid_out.saturating_add(amount);
+        // A vault with ETH heirs is kept as the record of their payouts.
+        let delete = is_last && vault.eth_heirs.is_empty();
 
-        if is_last {
+        if delete {
             let vault = self.vaults.remove(&owner).unwrap();
             self.unindex_heirs(&owner, &vault.heirs);
             env::log_str(&format!("vault_settled owner={owner}"));
         }
         env::log_str(&format!("claim owner={owner} heir={heir_id} amount={amount}"));
         Promise::new(heir_id).transfer(amount)
+    }
+
+    /// Anyone (the heir, a relayer, a friend) can trigger an ETH heir's payout once the
+    /// vault has unlocked. The contract fixes the recipient, amount and chain; the caller
+    /// only picks the gas price (within limits). Calling again re-signs the same payout
+    /// with the same nonce, e.g. with a higher gas price, so it can only ever be paid once.
+    /// Attach 150 Tgas. The contract pays the MPC network's 1 yoctoNEAR fee itself.
+    pub fn release_eth(
+        &mut self,
+        owner: AccountId,
+        address: String,
+        max_fee_per_gas: U128,
+        max_priority_fee_per_gas: U128,
+    ) -> Promise {
+        let address = normalize_address(&address);
+        let now = env::block_timestamp_ms();
+        let vault = self.vaults.get(&owner).unwrap_or_else(|| env::panic_str("Vault not found"));
+        require!(vault.status(now) == VaultStatus::Unlocked, "Vault is not unlocked yet");
+        let heir = vault
+            .eth_heirs
+            .iter()
+            .find(|h| h.address == address)
+            .unwrap_or_else(|| env::panic_str("That address is not an ETH heir of this vault"));
+        let next_nonce = self.eth_accounts.get(&owner).map(|a| a.next_nonce).unwrap_or(0);
+        let nonce = heir.nonce.unwrap_or(next_nonce);
+        let value = heir.amount_wei;
+        self.request_eth_signature(
+            owner,
+            PendingEthTx {
+                nonce,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+                to: address.clone(),
+                value,
+                heir_address: Some(address),
+            },
+        )
+    }
+
+    // ---------------------------------------------------------------- callbacks
+
+    /// Runs when the MPC network answers. Builds the signed Ethereum transaction and
+    /// records it. Returns it as "0x..." hex.
+    #[private]
+    pub fn on_eth_signed(
+        &mut self,
+        owner: AccountId,
+        tx: PendingEthTx,
+        #[callback_result] signature: Result<MpcSignature, PromiseError>,
+    ) -> Option<String> {
+        let mut account = self.eth_accounts.get(&owner).cloned().unwrap_or_default();
+        account.pending = false;
+
+        let Ok(signature) = signature else {
+            env::log_str("eth_sign_failed: the MPC network did not return a signature");
+            self.eth_accounts.insert(owner, account);
+            return None;
+        };
+
+        let signed_tx = format!("0x{}", hex::encode(build_signed_tx(&tx, &signature)));
+
+        // A fresh nonce was used: move the counter forward.
+        if tx.nonce == account.next_nonce {
+            account.next_nonce += 1;
+        }
+        account.last_signed_tx = Some(signed_tx.clone());
+        self.eth_accounts.insert(owner.clone(), account);
+
+        if let Some(heir_address) = &tx.heir_address {
+            if let Some(vault) = self.vaults.get_mut(&owner) {
+                if let Some(heir) = vault.eth_heirs.iter_mut().find(|h| &h.address == heir_address) {
+                    heir.nonce = Some(tx.nonce);
+                    heir.signed_tx = Some(signed_tx.clone());
+                }
+            }
+        }
+        env::log_str(&format!(
+            "eth_signed owner={owner} to={} value={} nonce={} tx={signed_tx}",
+            tx.to, tx.value.0, tx.nonce
+        ));
+        Some(signed_tx)
     }
 
     // ---------------------------------------------------------------- views
@@ -257,6 +499,7 @@ impl Contract {
         self.vaults.get(&owner).map(|v| VaultView {
             owner: owner.clone(),
             heirs: v.heirs.clone(),
+            eth_heirs: v.eth_heirs.clone(),
             balance: v.balance,
             storage_deposit: v.storage_deposit,
             check_in_period_ms: v.check_in_period_ms,
@@ -289,6 +532,16 @@ impl Contract {
         }
     }
 
+    /// The Chain Signatures derivation path of `owner`'s Ethereum address. The address
+    /// itself is derived off-chain from (this contract's account, this path).
+    pub fn get_eth_path(&self, owner: AccountId) -> String {
+        eth_path(&owner)
+    }
+
+    pub fn get_eth_account(&self, owner: AccountId) -> EthAccount {
+        self.eth_accounts.get(&owner).cloned().unwrap_or_default()
+    }
+
     // ---------------------------------------------------------------- internal
 
     /// The caller's vault, for an owner action. Panics if it doesn't exist or has
@@ -306,6 +559,38 @@ impl Contract {
         );
         vault.last_check_in_ms = now;
         vault
+    }
+
+    /// Ask the MPC network to sign `tx` with `owner`'s Ethereum key, then `on_eth_signed`.
+    fn request_eth_signature(&mut self, owner: AccountId, tx: PendingEthTx) -> Promise {
+        require!(tx.max_fee_per_gas.0 <= MAX_FEE_PER_GAS, "max_fee_per_gas is above 200 gwei");
+        require!(
+            tx.max_priority_fee_per_gas.0 <= MAX_PRIORITY_FEE_PER_GAS,
+            "max_priority_fee_per_gas is above 10 gwei"
+        );
+        require!(
+            tx.max_priority_fee_per_gas.0 <= tx.max_fee_per_gas.0,
+            "max_priority_fee_per_gas can't be above max_fee_per_gas"
+        );
+        require!(
+            env::prepaid_gas().saturating_sub(env::used_gas()) >= Gas::from_tgas(100),
+            "Attach at least 150 Tgas"
+        );
+
+        let account = self.eth_accounts.entry(owner.clone()).or_default();
+        require!(!account.pending, "Another ETH signature is in progress; try again shortly");
+        account.pending = true;
+
+        let hash = transfer_from(&tx).signing_hash();
+        ext_mpc::ext(MPC_CONTRACT.parse().unwrap())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(MPC_SIGN_GAS)
+            .sign(MpcSignRequest {
+                path: eth_path(&owner),
+                payload_v2: MpcPayload::Ecdsa(hex::encode(hash)),
+                domain_id: 0,
+            })
+            .then(Self::ext(env::current_account_id()).with_static_gas(ON_SIGNED_GAS).on_eth_signed(owner, tx))
     }
 
     fn index_heirs(&mut self, owner: &AccountId, heirs: &[Heir]) {
@@ -327,6 +612,41 @@ impl Contract {
             }
         }
     }
+}
+
+fn eth_path(owner: &AccountId) -> String {
+    format!("eth-{owner}")
+}
+
+/// Validate an Ethereum address and return it in lowercase.
+fn normalize_address(address: &str) -> String {
+    let bytes = eth::parse_address(address).unwrap_or_else(|e| env::panic_str(e));
+    format!("0x{}", hex::encode(bytes))
+}
+
+fn transfer_from(tx: &PendingEthTx) -> eth::EthTransfer {
+    eth::EthTransfer {
+        chain_id: eth::SEPOLIA_CHAIN_ID,
+        nonce: tx.nonce,
+        max_priority_fee_per_gas: tx.max_priority_fee_per_gas.0,
+        max_fee_per_gas: tx.max_fee_per_gas.0,
+        to: eth::parse_address(&tx.to).unwrap(),
+        value: tx.value.0,
+    }
+}
+
+/// Combine the transaction with the MPC signature into raw signed transaction bytes.
+fn build_signed_tx(tx: &PendingEthTx, sig: &MpcSignature) -> Vec<u8> {
+    // big_r is a compressed point: 1 prefix byte + the 32-byte x coordinate, which is `r`.
+    let big_r = hex::decode(&sig.big_r.affine_point).unwrap_or_else(|_| env::panic_str("Bad big_r"));
+    require!(big_r.len() == 33, "big_r must be 33 bytes");
+    let r: [u8; 32] = big_r[1..].try_into().unwrap();
+    let s: [u8; 32] = hex::decode(&sig.s.scalar)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .unwrap_or_else(|| env::panic_str("Bad s"));
+    let (s, y_parity) = eth::normalize_s(s, sig.recovery_id);
+    transfer_from(tx).signed(y_parity, &r, &s)
 }
 
 fn validate_heirs(owner: &AccountId, heirs: &[Heir]) {
