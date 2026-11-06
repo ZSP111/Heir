@@ -11,7 +11,7 @@ vault also controls an Ethereum address, so ETH can be inherited too.
 
 - [x] Vault contract (NEAR): create, deposit, check in, withdraw, heirs and shares, countdown and grace period, claim, cancel
 - [x] Chain Signatures: vault-controlled Ethereum (Sepolia) address, release ETH to heirs
-- [ ] Web app: owner dashboard and heir claim page
+- [x] Web app: owner dashboard and heir claim page
 - [ ] Gasless check-ins (meta transactions + relayer)
 
 ## Contract
@@ -23,6 +23,16 @@ cd contract
 cargo test                              # unit tests
 cargo near build non-reproducible-wasm  # builds target/near/heir_vault.wasm
 ```
+
+## Web app
+
+```bash
+cd web
+npm install
+npm run dev   # http://localhost:3000
+```
+
+See [web/README.md](web/README.md) for the pages and settings.
 
 ## Security notes
 
