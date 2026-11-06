@@ -267,6 +267,10 @@ function EthCard({ vault, locked, action }: { vault: Vault; locked: boolean; act
         <code className="break-all rounded-lg bg-surface px-2 py-1 text-sm">{address ?? "deriving…"}</code>
         {address && <ExternalLink href={`${config.ethExplorer}/address/${address}`}>Etherscan</ExternalLink>}
       </div>
+      <p className="mt-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs text-warn">
+        Only send <strong>Sepolia ETH</strong> to this address. Tokens (like USDC) or ETH on other networks sent
+        here can&apos;t be moved by the vault yet.
+      </p>
       <p className="mt-4 font-display text-3xl font-bold">{balance === null ? "…" : `${formatEth(balance)} ETH`}</p>
       {vault.eth_heirs.length > 0 && (
         <p className={`mt-1 text-sm ${short ? "font-semibold text-warn" : "text-muted"}`}>
