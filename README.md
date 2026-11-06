@@ -12,7 +12,7 @@ vault also controls an Ethereum address, so ETH can be inherited too.
 - [x] Vault contract (NEAR): create, deposit, check in, withdraw, heirs and shares, countdown and grace period, claim, cancel
 - [x] Chain Signatures: vault-controlled Ethereum (Sepolia) address, release ETH to heirs
 - [x] Web app: owner dashboard and heir claim page
-- [ ] Gasless check-ins (meta transactions + relayer)
+- [x] Gasless check-ins (meta transactions + relayer)
 
 ## Contract
 
@@ -33,6 +33,19 @@ npm run dev   # http://localhost:3000
 ```
 
 See [web/README.md](web/README.md) for the pages and settings.
+
+### Gasless check-ins
+
+"I'm still here" is free for the owner when their wallet can sign NEAR meta transactions
+(NEP-366): the wallet signs a `check_in` call without sending it, and the app's relayer
+(`web/src/app/api/relay/route.ts`) wraps it in a transaction and pays the gas. The contract
+still sees the owner as the caller. The relayer only pays for one `check_in` call on the Heir
+contract, with no NEAR attached, at most 30 Tgas, from an account whose vault hasn't unlocked
+([relayPolicy.ts](web/src/lib/relayPolicy.ts)). Wallets without meta-transaction support fall
+back to a normal transaction.
+
+Enable it with server-side `RELAYER_ACCOUNT_ID` and `RELAYER_PRIVATE_KEY` (a funded NEAR
+account's full-access key; keep it out of the repo) and `NEXT_PUBLIC_GASLESS=true`.
 
 ## Security notes
 

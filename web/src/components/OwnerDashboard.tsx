@@ -148,17 +148,38 @@ function CreateVault({ owner, action, onDone }: { owner: string; action: Action;
 // ---------------------------------------------------------------- check in
 
 function CheckInButton({ action, onDone }: { action: Action; onDone: () => void }) {
-  const { signAndSend } = useWallet();
+  const { signAndSend, signDelegate } = useWallet();
+
   const checkIn = () =>
     action.run("check-in", async () => {
+      // Gasless first: the wallet signs a meta transaction and our relayer pays the gas.
+      if (config.gasless) {
+        const signedDelegate = await signDelegate(tx.checkIn());
+        if (signedDelegate) {
+          const response = await fetch("/api/relay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ signedDelegate }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error ?? "The relayer couldn't send your check-in");
+          onDone();
+          return "Checked in, gas-free. The countdown has restarted.";
+        }
+      }
+      // This wallet can't sign meta transactions (or gasless is off): a normal transaction.
       await signAndSend(tx.checkIn());
       onDone();
       return "Checked in. The countdown has restarted.";
     });
+
   return (
-    <Button onClick={checkIn} busy={action.busy === "check-in"} className="mt-5 w-full py-4 text-base">
-      I&apos;m still here
-    </Button>
+    <div className="mt-5 space-y-1">
+      <Button onClick={checkIn} busy={action.busy === "check-in"} className="w-full py-4 text-base">
+        I&apos;m still here
+      </Button>
+      {config.gasless && <p className="text-center text-xs text-muted">Free: Heir pays the network fee when your wallet supports it.</p>}
+    </div>
   );
 }
 

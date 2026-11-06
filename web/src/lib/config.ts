@@ -11,6 +11,8 @@ export const config = {
   mpcContract: process.env.NEXT_PUBLIC_MPC_CONTRACT_ID ?? "v1.signer-prod.testnet",
   sepoliaRpcUrl:
     process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
+  /** Gasless check-ins through our relayer (/api/relay). Needs RELAYER_* on the server. */
+  gasless: process.env.NEXT_PUBLIC_GASLESS === "true",
   nearExplorer: "https://testnet.nearblocks.io",
   ethExplorer: "https://sepolia.etherscan.io",
 };

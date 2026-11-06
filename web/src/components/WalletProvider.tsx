@@ -20,6 +20,11 @@ interface Wallet {
   signOut: () => Promise<void>;
   /** Ask the wallet to sign and send a transaction. Resolves once it's on chain. */
   signAndSend: (transaction: HeirTransaction) => Promise<unknown>;
+  /**
+   * Ask the wallet to sign a meta transaction (without sending it) for a relayer to
+   * submit. Returns it base64-encoded, or null if this wallet can't sign meta transactions.
+   */
+  signDelegate: (transaction: HeirTransaction) => Promise<string | null>;
 }
 
 const WalletContext = createContext<Wallet | null>(null);
@@ -85,8 +90,19 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     [connector],
   );
 
+  const signDelegate = useCallback(
+    async (transaction: HeirTransaction) => {
+      if (!connector) throw new Error("The wallet is still loading");
+      const wallet = await connector.wallet();
+      if (!wallet.manifest.features?.signDelegateActions) return null;
+      const { signedDelegateActions } = await wallet.signDelegateActions({ delegateActions: [transaction] });
+      return signedDelegateActions[0] ?? null;
+    },
+    [connector],
+  );
+
   return (
-    <WalletContext.Provider value={{ accountId, loading, signIn, signOut, signAndSend }}>
+    <WalletContext.Provider value={{ accountId, loading, signIn, signOut, signAndSend, signDelegate }}>
       {children}
     </WalletContext.Provider>
   );
