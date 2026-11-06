@@ -9,14 +9,13 @@ use near_sdk::env;
 
 /// Ethereum Sepolia testnet.
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
-/// A plain ETH transfer to a normal wallet always costs exactly 21,000 gas.
-pub const TRANSFER_GAS: u64 = 21_000;
 
 pub struct EthTransfer {
     pub chain_id: u64,
     pub nonce: u64,
     pub max_priority_fee_per_gas: u128,
     pub max_fee_per_gas: u128,
+    pub gas_limit: u64,
     pub to: [u8; 20],
     pub value: u128,
 }
@@ -28,7 +27,7 @@ impl EthTransfer {
             rlp_uint(self.nonce as u128),
             rlp_uint(self.max_priority_fee_per_gas),
             rlp_uint(self.max_fee_per_gas),
-            rlp_uint(TRANSFER_GAS as u128),
+            rlp_uint(self.gas_limit as u128),
             rlp_bytes(&self.to),
             rlp_uint(self.value),
             rlp_bytes(&[]), // data: none
@@ -156,6 +155,7 @@ mod tests {
             nonce: 7,
             max_priority_fee_per_gas: 2_000_000_000,
             max_fee_per_gas: 30_000_000_000,
+            gas_limit: 21_000,
             to: parse_address("0x9f81815252301475c6f15ea6165e854061cd0346").unwrap(),
             value: 12_345_678_900_000_000,
         }

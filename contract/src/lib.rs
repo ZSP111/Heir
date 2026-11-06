@@ -40,6 +40,11 @@ const ON_SIGNED_GAS: Gas = Gas::from_tgas(15);
 /// Limits on the gas price a caller can pick, so nobody can burn the vault's ETH on fees.
 pub const MAX_FEE_PER_GAS: u128 = 200_000_000_000; // 200 gwei
 pub const MAX_PRIORITY_FEE_PER_GAS: u128 = 10_000_000_000; // 10 gwei
+/// Gas limit for ETH payouts. Sending ETH to a brand-new address on Sepolia costs about
+/// 207k gas (to an existing one, 12k). Ethereum only charges for gas actually used, so a
+/// generous fixed limit costs nothing extra and can't be set too low by a caller (a failed
+/// transfer would still use up its nonce).
+pub const ETH_TRANSFER_GAS_LIMIT: u64 = 500_000;
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq)]
@@ -630,6 +635,7 @@ fn transfer_from(tx: &PendingEthTx) -> eth::EthTransfer {
         nonce: tx.nonce,
         max_priority_fee_per_gas: tx.max_priority_fee_per_gas.0,
         max_fee_per_gas: tx.max_fee_per_gas.0,
+        gas_limit: ETH_TRANSFER_GAS_LIMIT,
         to: eth::parse_address(&tx.to).unwrap(),
         value: tx.value.0,
     }

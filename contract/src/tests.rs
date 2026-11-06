@@ -623,12 +623,12 @@ fn only_one_eth_signature_at_a_time() {
 #[test]
 fn mpc_signature_becomes_a_signed_ethereum_tx() {
     let mut c = setup_eth();
-    // Same fields as the ethers.js vector (nonce 7, 0.0123456789 ETH to ETH_BOB).
+    // Same fields as the ethers.js vector (nonce 7, 0.0123456789 ETH to ETH_BOB, 500k gas).
     let tx = pending_for(ETH_BOB, 12_345_678_900_000_000, 7);
     let signed = mpc_answers(&mut c, tx, near_sdk::PromiseResult::Successful(mpc_signature()));
     assert_eq!(
         signed.as_deref(),
-        Some("0x02f87583aa36a70784773594008506fc23ac00825208949f81815252301475c6f15ea6165e854061cd0346872bdc545d58750080c001a0fb6921cfd1b9e1d45fe1764a3371e63a05a663713acb9c1100a70591c326fec0a02f75761e6af64af706f7b172b939c92b0ef9a3eb211040f704908e4c98e06a67")
+        Some("0x02f87683aa36a70784773594008506fc23ac008307a120949f81815252301475c6f15ea6165e854061cd0346872bdc545d58750080c001a0fb6921cfd1b9e1d45fe1764a3371e63a05a663713acb9c1100a70591c326fec0a02f75761e6af64af706f7b172b939c92b0ef9a3eb211040f704908e4c98e06a67")
     );
     let heir = &vault(&c).eth_heirs[0];
     assert_eq!(heir.nonce, Some(7));
@@ -742,4 +742,10 @@ fn mpc_args() -> serde_json::Value {
     let sign_call = receipts.iter().find(|r| r.receiver_id.as_str() == MPC_CONTRACT).expect("call to MPC");
     let MockAction::FunctionCallWeight { args, .. } = &sign_call.actions[0] else { panic!("expected a function call") };
     serde_json::from_slice(args).unwrap()
+}
+
+#[test]
+fn eth_payouts_use_a_generous_gas_limit() {
+    // Sending to a brand-new address on Sepolia costs ~207k gas; 21k ran out of gas.
+    assert_eq!(transfer_from(&pending_for(ETH_BOB, 1, 0)).gas_limit, 500_000);
 }

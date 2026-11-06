@@ -10,7 +10,7 @@ vault also controls an Ethereum address, so ETH can be inherited too.
 ## Status
 
 - [x] Vault contract (NEAR): create, deposit, check in, withdraw, heirs and shares, countdown and grace period, claim, cancel
-- [ ] Chain Signatures: vault-controlled Ethereum (Sepolia) address, release ETH to heirs
+- [x] Chain Signatures: vault-controlled Ethereum (Sepolia) address, release ETH to heirs
 - [ ] Web app: owner dashboard and heir claim page
 - [ ] Gasless check-ins (meta transactions + relayer)
 
@@ -23,6 +23,16 @@ cd contract
 cargo test                              # unit tests
 cargo near build non-reproducible-wasm  # builds target/near/heir_vault.wasm
 ```
+
+## Security notes
+
+- Heirs' NEAR shares and ETH amounts, recipients and the Ethereum chain ID are fixed by the
+  contract; whoever triggers a payout only chooses the gas price, within a cap.
+- ETH signing requests run one at a time per owner, and the contract tracks the Ethereum
+  nonce itself, so a payout can never be signed twice with different nonces.
+- **Testnet only:** the contract account `heir-vault.testnet` still has a full-access key so
+  it can be upgraded during the hackathon. A production deployment must remove that key
+  (or hand upgrades to a DAO) so nobody, including the Heir team, can change the code.
 
 ## Other project by the same author
 
