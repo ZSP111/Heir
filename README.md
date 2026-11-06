@@ -16,6 +16,8 @@ vault also controls an Ethereum address, so ETH can be inherited too.
 
 ## Contract
 
+Live on testnet: [`heir-vault.testnet`](https://testnet.nearblocks.io/address/heir-vault.testnet)
+
 ```bash
 cd contract
 cargo test                              # unit tests
