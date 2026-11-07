@@ -1,13 +1,29 @@
 # Heir: crypto inheritance across chains
 
-Heir is a "dead man's switch" vault for crypto. The owner deposits savings into a NEAR smart
-contract, names heirs, and checks in now and then. If the owner stops checking in, a grace period
-starts; if they still don't respond, the vault unlocks and the heirs can claim. Through NEAR Chain
-Signatures the same contract also controls an Ethereum address for each vault, and pays ETH heirs
-directly on Ethereum.
+**In plain English:** Heir is like a will for your crypto, one that carries itself out.
+
+If something happens to you, your crypto is usually lost forever: only your private key can move
+it, and if you share that key with your family today, they can take everything today. With Heir:
+
+1. You put your savings in a vault and choose who gets what.
+2. Every so often you tap **"I'm still here"**. It takes a second and it's free.
+3. If you stop checking in, Heir waits a little longer, just in case. If you still don't respond,
+   the vault opens and your family collects what you left them.
+
+No company ever holds the money, not even us: the rules live in a smart contract on NEAR, and
+while you're alive only you can change them. (During the hackathon the testnet contract can
+still be upgraded by its developer; see [Security](#security-model-and-limitations).) One vault covers both NEAR and Ethereum: using NEAR
+Chain Signatures, the vault on NEAR pays your Ethereum heirs directly on Ethereum, with no bridge
+and no middleman.
+
+**Technically:** a "dead man's switch" vault. The owner deposits into a NEAR smart contract, names
+heirs, and checks in. After a check-in period with no activity a grace period starts; after that the
+vault unlocks and heirs claim. Through NEAR Chain Signatures the same contract controls an Ethereum
+address for each vault and signs ETH payouts to heirs.
 
 - **Live demo:** https://web-fpdj.vercel.app (NEAR testnet + Ethereum Sepolia)
 - **Contract:** [`heir-vault.testnet`](https://testnet.nearblocks.io/address/heir-vault.testnet)
+- **Demo video:** see the X post (link added at submission)
 - **Built at NEAR HACKATHON** (Nov 2026) by Peter Obisi. Tracks: `open`, `realworld`.
 
 ## The problem
