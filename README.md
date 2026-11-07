@@ -23,7 +23,7 @@ address for each vault and signs ETH payouts to heirs.
 
 - **Live demo:** https://web-fpdj.vercel.app (NEAR testnet + Ethereum Sepolia)
 - **Contract:** [`heir-vault.testnet`](https://testnet.nearblocks.io/address/heir-vault.testnet)
-- **Demo video:** see the X post (link added at submission)
+- **Demo video:** https://x.com/peter_obisi/status/2119013176310427661
 - **Built at NEAR HACKATHON** (Nov 2026) by Peter Obisi. Tracks: `open`, `realworld`.
 
 ## The problem
